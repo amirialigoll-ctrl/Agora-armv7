@@ -31,6 +31,17 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 if(ANDROID_ABI STREQUAL "armeabi-v7a")
     set(GGML_CPU_ARM_ARCH "armv7-a" CACHE STRING "" FORCE)
     message(STATUS "armeabi-v7a: pinning GGML_CPU_ARM_ARCH=armv7-a (no dotprod/i8mm/SVE assumptions)")
+
+    # ggml's optional "llamafile" SGEMM fast-path (ggml-cpu/llamafile/sgemm.cpp) has an
+    # upstream bug on 32-bit ARM: its `#if defined(__ARM_NEON)` guard around
+    # vld1q_f16/vld1_f16 doesn't also check __ARM_FEATURE_FP16_VECTOR_ARITHMETIC (there's a
+    # FIXME comment acknowledging this in the source), so it fails to compile with
+    # "use of undeclared identifier 'vld1q_f16'" on armv7-a NEON, which lacks the ARMv8.2
+    # FP16 arithmetic extension that AArch64 has. It's a pure performance optimization —
+    # disabling it just makes ggml use its normal (still NEON-accelerated where safe)
+    # matmul path. Correctness over performance on 32-bit ARM.
+    set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+    message(STATUS "armeabi-v7a: disabling GGML_LLAMAFILE (upstream FP16-guard bug on 32-bit ARM NEON)")
 endif()
 
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama)
