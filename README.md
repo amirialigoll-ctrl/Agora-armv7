@@ -1,3 +1,35 @@
+> ## 🔧 This fork: armeabi-v7a (32-bit ARM) support
+>
+> This is a fork of [newo-ether/Agora](https://github.com/newo-ether/Agora). Upstream targets
+> **arm64-v8a** only; this fork adds full **armeabi-v7a** support side by side with the existing
+> 64-bit build, for older/budget 32-bit-only Android devices.
+>
+> **What changed vs. upstream:**
+>
+> | Area | Change |
+> |---|---|
+> | `app/build.gradle.kts` | `armeabi-v7a` added to `ndk.abiFilters` |
+> | `build-proot.sh` | Loops over both ABIs; correct per-ABI NDK triple (`armv7a-linux-androideabi24` for 32-bit) |
+> | `app/src/main/cpp/CMakeLists.txt` | Pins `GGML_CPU_ARM_ARCH=armv7-a` on armeabi-v7a so ggml never assumes AArch64-only CPU extensions |
+> | `ProotSandboxManager.kt` | Alpine rootfs URL/SHA-256/musl linker name now selected at runtime from `Build.SUPPORTED_ABIS` instead of hardcoded to aarch64 |
+> | `.github/workflows/build.yml` | CI builds both ABIs and **fails the job** if `lib/armeabi-v7a/` is missing from the APK |
+>
+> `proot` itself needed no source changes — it already ships full 32-bit ARM syscall tables and
+> loader assembly.
+>
+> **⚠️ Before shipping to a real device:** the armv7 Alpine minirootfs SHA-256 in
+> `ProotSandboxManager.kt` is a placeholder (`dl-cdn.alpinelinux.org` wasn't reachable from the
+> build environment that produced this port). Pin the real hash:
+> ```bash
+> curl -LO https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/armv7/alpine-minirootfs-3.21.0-armv7.tar.gz
+> sha256sum alpine-minirootfs-3.21.0-armv7.tar.gz
+> ```
+> then replace the placeholder string in `ProotSandboxManager.kt`.
+>
+> Everything below this notice is upstream's original README.
+
+---
+
 <div align="center">
   <img src="app/src/main/assets/agora_transparent_large.png" alt="Agora Logo" width="120" />
 
