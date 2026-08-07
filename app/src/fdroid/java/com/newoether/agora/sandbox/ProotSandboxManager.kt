@@ -41,11 +41,54 @@ class ProotSandboxManager(
     // Pin to the stable v3.21 branch to match the downloaded minirootfs (3.21.0). Using edge here
     // caused `apk upgrade` to pull divergent packages (e.g. yash-binsh vs busybox-binsh /bin/sh
     // conflict) and rotates signing keys; the stable branch avoids both.
-    private val alpineMirror = "https://dl-cdn.alpinelinux.org/alpine/v3.21/main"
+    private val alpineBase = "https://dl-cdn.alpinelinux.org/alpine/v3.21"
+
+    /**
+     * One entry per supported device ABI: the matching Alpine architecture name (Alpine calls
+     * 32-bit hard-float ARM "armv7", not "armeabi-v7a"), the musl dynamic linker filename for
+     * that arch, and the pinned SHA-256 of the 3.21.0 minirootfs tarball for that arch.
+     *
+     * IMPORTANT — armv7 checksum: dl-cdn.alpinelinux.org is not reachable from this dev/CI
+     * sandbox, so the armv7 SHA-256 below could not be independently verified the same way the
+     * aarch64 one was. Before shipping, verify and replace it yourself:
+     *   curl -LO https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/armv7/alpine-minirootfs-3.21.0-armv7.tar.gz
+     *   sha256sum alpine-minirootfs-3.21.0-armv7.tar.gz
+     * and compare against the published .sha256 sidecar at the same URL + ".sha256".
+     */
+    private data class AlpineArch(
+        val alpineArch: String,
+        val muslLinker: String,
+        val rootfsSha256: String,
+    )
+
+    private val alpineArchByAbi: Map<String, AlpineArch> = mapOf(
+        "arm64-v8a" to AlpineArch(
+            alpineArch = "aarch64",
+            muslLinker = "ld-musl-aarch64.so.1",
+            rootfsSha256 = "f31202c4070c4ef7de9e157e1bd01cb4da3a2150035d74ea5372c5e86f1efac1",
+        ),
+        "armeabi-v7a" to AlpineArch(
+            alpineArch = "armv7",
+            muslLinker = "ld-musl-armhf.so.1",
+            // TODO(armv7-verify): pin the real hash before release — see note above.
+            rootfsSha256 = "PIN_ME_BEFORE_RELEASE_SEE_COMMENT_ABOVE",
+        ),
+    )
+
+    // Pick the best-matching entry from the device's actual supported-ABI list (ordered by
+    // preference), not just the first jniLibs folder we happen to ship — this keeps behavior
+    // correct if a future arm64-v8a+armeabi-v7a "fat" APK runs on either a 64-bit or a pure
+    // 32-bit device.
+    private val deviceAlpineArch: AlpineArch = Build.SUPPORTED_ABIS
+        .firstNotNullOfOrNull { alpineArchByAbi[it] }
+        ?: alpineArchByAbi.getValue("arm64-v8a")
+
+    private val alpineMirror = "$alpineBase/main"
     // Base rootfs is fetched on-device at install time (not bundled in the APK), then verified
-    // against this pinned SHA-256 before extraction. Stable v3.21 release URL.
-    private val rootfsUrl = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz"
-    private val rootfsSha256 = "f31202c4070c4ef7de9e157e1bd01cb4da3a2150035d74ea5372c5e86f1efac1"
+    // against the pinned SHA-256 above before extraction. Stable v3.21 release URL.
+    private val rootfsUrl =
+        "$alpineBase/releases/${deviceAlpineArch.alpineArch}/alpine-minirootfs-3.21.0-${deviceAlpineArch.alpineArch}.tar.gz"
+    private val rootfsSha256 = deviceAlpineArch.rootfsSha256
     private var sandboxScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _terminalOutput = MutableStateFlow("")
     override val terminalOutput: StateFlow<String> = _terminalOutput.asStateFlow()
@@ -119,17 +162,20 @@ class ProotSandboxManager(
         return false
     }
 
+    private fun muslLinkerCandidates(): List<String> =
+        listOf("lib/${deviceAlpineArch.muslLinker}", "usr/lib/${deviceAlpineArch.muslLinker}")
+
     override fun isAvailableSync(): Boolean {
         if (!rootfsDir.isDirectory) return false
         if (!File(rootfsDir, "bin/sh").exists()) return false
-        return listOf("lib/ld-musl-aarch64.so.1", "usr/lib/ld-musl-aarch64.so.1")
+        return muslLinkerCandidates()
             .map { File(rootfsDir, it) }.any { it.exists() }
     }
 
     override suspend fun isAvailable(): Boolean = withContext(Dispatchers.IO) {
         if (!rootfsDir.isDirectory) { lastError = "rootfs not found: ${rootfsDir.absolutePath}"; return@withContext false }
         if (!ensureShell()) { lastError = "/bin/sh missing"; return@withContext false }
-        val linker = listOf("lib/ld-musl-aarch64.so.1", "usr/lib/ld-musl-aarch64.so.1").map { File(rootfsDir, it) }.any { it.exists() }
+        val linker = muslLinkerCandidates().map { File(rootfsDir, it) }.any { it.exists() }
         if (!linker) { lastError = "musl linker missing"; return@withContext false }
         ensureSandboxMountTargets()
         ensurePackageMetadata()
@@ -491,7 +537,7 @@ class ProotSandboxManager(
 
         // 1. Download + parse repo index
         onProgress("Fetching package index...")
-        val indexUrl = "$alpineMirror/aarch64/APKINDEX.tar.gz"
+        val indexUrl = "$alpineMirror/${deviceAlpineArch.alpineArch}/APKINDEX.tar.gz"
         val indexFile = File(context.filesDir, "APKINDEX.tar.gz")
         try {
             val conn = URL(indexUrl).openConnection() as HttpURLConnection
@@ -558,7 +604,7 @@ class ProotSandboxManager(
             if (!f.exists() || f.length() == 0L) {
                 onProgress("Downloading $fn...")
                 try {
-                    val conn = URL("$alpineMirror/aarch64/$fn").openConnection() as HttpURLConnection
+                    val conn = URL("$alpineMirror/${deviceAlpineArch.alpineArch}/$fn").openConnection() as HttpURLConnection
                     if (conn.responseCode != 200) { onProgress("HTTP ${conn.responseCode}"); lastError = "HTTP ${conn.responseCode}: $fn"; tmpDir.listFiles()?.forEach { it.delete() }; return@withContext false }
                     conn.inputStream.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
                 } catch (ex: Throwable) { onProgress("FAIL: ${ex.message}"); lastError = "Download: ${ex.message}"; tmpDir.listFiles()?.forEach { it.delete() }; return@withContext false }
@@ -668,7 +714,7 @@ class ProotSandboxManager(
 
         // 1. Download + parse APKINDEX
         onProgress("Fetching package index...")
-        val indexUrl = "$alpineMirror/aarch64/APKINDEX.tar.gz"
+        val indexUrl = "$alpineMirror/${deviceAlpineArch.alpineArch}/APKINDEX.tar.gz"
         val indexFile = File(context.filesDir, "APKINDEX_UPGRADE.tar.gz")
         try {
             val conn = URL(indexUrl).openConnection() as HttpURLConnection
@@ -724,7 +770,7 @@ class ProotSandboxManager(
             if (!f.exists() || f.length() == 0L) {
                 onProgress("Downloading $fn...")
                 try {
-                    val conn = URL("$alpineMirror/aarch64/$fn").openConnection() as HttpURLConnection
+                    val conn = URL("$alpineMirror/${deviceAlpineArch.alpineArch}/$fn").openConnection() as HttpURLConnection
                     if (conn.responseCode != 200) {
                         onProgress("HTTP ${conn.responseCode}")
                         lastError = "HTTP ${conn.responseCode}: $fn"

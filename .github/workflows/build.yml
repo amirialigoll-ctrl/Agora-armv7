@@ -20,7 +20,8 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      - id: setup-android
+        uses: android-actions/setup-android@v3
         with:
           packages: "ndk;28.2.13676358"
 
@@ -42,10 +43,49 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build F-Droid Release APK
-        run: chmod +x ./gradlew && ./gradlew assembleFdroidRelease
+      # Build proot native binaries for BOTH ABIs (arm64-v8a + armeabi-v7a) before Gradle,
+      # matching what local dev machines do via build.ps1/build_fdroid.ps1.
+      - name: Build proot native binaries (arm64-v8a + armeabi-v7a)
+        run: |
+          chmod +x ./build-proot.sh
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" ./build-proot.sh --force
 
-      - name: Upload APK
+      - name: Build F-Droid Debug APK
+        run: chmod +x ./gradlew && ./gradlew assembleFdroidDebug
+
+      - name: Build F-Droid Release APK
+        run: ./gradlew assembleFdroidRelease
+
+      - name: Verify armeabi-v7a is present in both APKs
+        run: |
+          set -euo pipefail
+          fail=0
+          for apk in $(find app/build/outputs/apk/fdroid -name "*.apk"); do
+            echo "=== Checking $apk ==="
+            if ! unzip -l "$apk" | grep -q "lib/armeabi-v7a/"; then
+              echo "::error::armeabi-v7a native libraries missing from $apk"
+              fail=1
+            else
+              echo "OK: armeabi-v7a present"
+              unzip -l "$apk" | grep "lib/armeabi-v7a/"
+            fi
+            if ! unzip -l "$apk" | grep -q "lib/arm64-v8a/"; then
+              echo "::error::arm64-v8a native libraries missing from $apk"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::One or more APKs are missing a required ABI. Failing build."
+            exit 1
+          fi
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: agora-fdroid-debug
+          path: app/build/outputs/apk/fdroid/debug/*.apk
+
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: agora-fdroid-release

@@ -32,7 +32,10 @@ android {
 
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // 32-bit ARM (armeabi-v7a) added alongside the original arm64-v8a target.
+            // GGML_CPU_GENERIC is forced for armeabi-v7a in CMakeLists.txt (see below) so the
+            // build stays correct even on NEON-less Cortex-A cores; performance is secondary.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
         externalNativeBuild {

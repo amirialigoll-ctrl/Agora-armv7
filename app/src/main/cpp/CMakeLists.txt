@@ -20,6 +20,19 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "")
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 
+# ── armeabi-v7a: pin a safe, NEON-optional baseline ──────────────────
+# 32-bit ARM devices vary widely in feature support. GGML_NATIVE is already
+# OFF for this cross-compile (ggml disables it automatically when
+# CMAKE_CROSSCOMPILING is set), so ggml falls into its GGML_CPU_ARM_ARCH /
+# GGML_CPU_ALL_VARIANTS branch (see ggml/src/ggml-cpu/CMakeLists.txt). We set
+# GGML_CPU_ARM_ARCH explicitly to a conservative "armv7-a" baseline so the
+# build never assumes dotprod/i8mm/SVE (all AArch64-only or high-end-only
+# extensions) on a 32-bit target. Correctness over peak performance.
+if(ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(GGML_CPU_ARM_ARCH "armv7-a" CACHE STRING "" FORCE)
+    message(STATUS "armeabi-v7a: pinning GGML_CPU_ARM_ARCH=armv7-a (no dotprod/i8mm/SVE assumptions)")
+endif()
+
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama)
 add_subdirectory(${LLAMA_CPP_DIR}/common ${CMAKE_CURRENT_BINARY_DIR}/common)
 add_subdirectory(${LLAMA_CPP_DIR}/tools/mtmd ${CMAKE_CURRENT_BINARY_DIR}/mtmd)
