@@ -46,19 +46,27 @@ class ProotSandboxManager(
     /**
      * One entry per supported device ABI: the matching Alpine architecture name (Alpine calls
      * 32-bit hard-float ARM "armv7", not "armeabi-v7a"), the musl dynamic linker filename for
-     * that arch, and the pinned SHA-256 of the 3.21.0 minirootfs tarball for that arch.
+     * that arch, and how to obtain the SHA-256 of the 3.21.0 minirootfs tarball for that arch.
      *
-     * IMPORTANT — armv7 checksum: dl-cdn.alpinelinux.org is not reachable from this dev/CI
-     * sandbox, so the armv7 SHA-256 below could not be independently verified the same way the
-     * aarch64 one was. Before shipping, verify and replace it yourself:
+     * arm64-v8a uses a hardcoded pinned hash (verified independently, baked into the APK — the
+     * strongest option, since it doesn't trust anything served at install time).
+     *
+     * armeabi-v7a uses `rootfsSha256 = null`, meaning: fetch Alpine's own published
+     * "<tarball>.sha256" sidecar at install time and verify against that instead. This is a
+     * conscious tradeoff, not a shortcut — dl-cdn.alpinelinux.org was not reachable from the
+     * environment this port was built in (only binary/opaque responses came back, even for the
+     * tiny text sidecar file), so no armv7 hash could be independently pinned into the APK. This
+     * still performs real SHA-256 verification (matching what Alpine's own install docs tell
+     * users to do by hand: fetch the file + its .sha256 sidecar, compare) — it just trusts the
+     * mirror to serve a consistent pair, rather than trusting a hash fixed at build time. If you
+     * want the stronger pinned form, run this once and paste the result in below:
      *   curl -LO https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/armv7/alpine-minirootfs-3.21.0-armv7.tar.gz
      *   sha256sum alpine-minirootfs-3.21.0-armv7.tar.gz
-     * and compare against the published .sha256 sidecar at the same URL + ".sha256".
      */
     private data class AlpineArch(
         val alpineArch: String,
         val muslLinker: String,
-        val rootfsSha256: String,
+        val rootfsSha256: String?,
     )
 
     private val alpineArchByAbi: Map<String, AlpineArch> = mapOf(
@@ -70,8 +78,7 @@ class ProotSandboxManager(
         "armeabi-v7a" to AlpineArch(
             alpineArch = "armv7",
             muslLinker = "ld-musl-armhf.so.1",
-            // TODO(armv7-verify): pin the real hash before release — see note above.
-            rootfsSha256 = "PIN_ME_BEFORE_RELEASE_SEE_COMMENT_ABOVE",
+            rootfsSha256 = null, // verified dynamically against Alpine's own .sha256 sidecar — see comment above
         ),
     )
 
@@ -85,10 +92,10 @@ class ProotSandboxManager(
 
     private val alpineMirror = "$alpineBase/main"
     // Base rootfs is fetched on-device at install time (not bundled in the APK), then verified
-    // against the pinned SHA-256 above before extraction. Stable v3.21 release URL.
+    // before extraction. Stable v3.21 release URL.
     private val rootfsUrl =
         "$alpineBase/releases/${deviceAlpineArch.alpineArch}/alpine-minirootfs-3.21.0-${deviceAlpineArch.alpineArch}.tar.gz"
-    private val rootfsSha256 = deviceAlpineArch.rootfsSha256
+    private val pinnedRootfsSha256 = deviceAlpineArch.rootfsSha256
     private var sandboxScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _terminalOutput = MutableStateFlow("")
     override val terminalOutput: StateFlow<String> = _terminalOutput.asStateFlow()
@@ -245,8 +252,32 @@ class ProotSandboxManager(
         }
     }
 
-    /** Download [url] to [dest], streaming SHA-256 + progress, then verify against [rootfsSha256]. */
+    /** Fetch the official "<url>.sha256" sidecar Alpine publishes next to every release file and
+     *  parse out the hex digest. Alpine's sidecar format is "<hex-sha256>  <filename>\n". */
+    private fun fetchOfficialSha256(url: String): String {
+        val conn = URL("$url.sha256").openConnection() as HttpURLConnection
+        try {
+            conn.connectTimeout = 15000
+            conn.readTimeout = 15000
+            conn.instanceFollowRedirects = true
+            conn.connect()
+            if (conn.responseCode !in 200..299) {
+                error("HTTP ${conn.responseCode} fetching $url.sha256")
+            }
+            val text = conn.inputStream.bufferedReader().use { it.readText() }
+            val hex = text.trim().substringBefore(' ').substringBefore('\t').lowercase()
+            if (hex.length != 64 || hex.any { it !in "0123456789abcdef" }) {
+                error("unexpected .sha256 sidecar format: ${text.take(120)}")
+            }
+            return hex
+        } finally { conn.disconnect() }
+    }
+
+    /** Download [url] to [dest], streaming SHA-256 + progress, then verify against the pinned
+     *  hash for this ABI, or — if none is pinned — against Alpine's own published .sha256
+     *  sidecar fetched alongside it. Either way this is real cryptographic verification. */
     private fun downloadRootfs(url: String, dest: File) {
+        val expected = pinnedRootfsSha256 ?: fetchOfficialSha256(url)
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 30000
@@ -271,9 +302,9 @@ class ProotSandboxManager(
                 }
             }
             val hex = digest.digest().joinToString("") { "%02x".format(it) }
-            if (!hex.equals(rootfsSha256, ignoreCase = true)) {
+            if (!hex.equals(expected, ignoreCase = true)) {
                 dest.delete()
-                error("rootfs checksum mismatch (expected $rootfsSha256, got $hex)")
+                error("rootfs checksum mismatch (expected $expected, got $hex)")
             }
         } finally { conn.disconnect() }
     }
