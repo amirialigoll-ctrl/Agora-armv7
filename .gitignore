@@ -37,3 +37,13 @@ app/src/fdroid/jniLibs/arm64-v8a/
 /.claude/
 signing.properties
 AGENTS.md
+
+# Windows Signing Material
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt
+.env
+
