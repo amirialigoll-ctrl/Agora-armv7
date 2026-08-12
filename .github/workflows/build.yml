@@ -26,12 +26,12 @@ jobs:
           packages: "ndk;28.2.13676358"
 
       - name: Restore signing key
-        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > ${{ github.workspace }}/release.jks
           cat >> local.properties <<EOF
@@ -90,3 +90,11 @@ jobs:
         with:
           name: agora-fdroid-release
           path: app/build/outputs/apk/fdroid/release/*.apk
+
+      - name: Remove temporary signing keystore
+        if: always()
+        run: |
+          rm -f ${{ github.workspace }}/release.jks
+          # local.properties may also hold the plaintext store/key passwords appended above
+          rm -f ${{ github.workspace }}/local.properties
+          echo "Temporary signing material removed from runner."
