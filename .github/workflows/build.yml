@@ -10,6 +10,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # 'secrets' can't be referenced directly inside a step's `if:` (GitHub Actions
+      # restriction) — so resolve presence once here at job level, where secrets IS
+      # allowed, and have the step check this env var instead.
+      HAS_SIGNING_SECRET: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,7 +31,7 @@ jobs:
           packages: "ndk;28.2.13676358"
 
       - name: Restore signing key
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_SIGNING_SECRET == 'true' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
